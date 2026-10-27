@@ -196,6 +196,38 @@ createInterface({ input: process.stdin }).on('line', line => {
       controller.cancel();
     }
   });
+
+  it("hands a repeated start the sign-in already waiting on its redirect", async () => {
+    const fake = fakeRuntime();
+    const launches = join(fake.directory, "launches.log");
+    const url = "https://accounts.google.com/o/oauth2/v2/auth?response_type=code&state=fixture&redirect_uri=http%3A%2F%2F127.0.0.1%3A54321%2F";
+    writeFileSync(fake.executable, `#!/usr/bin/env node
+import { appendFileSync } from 'node:fs';
+import { createInterface } from 'node:readline';
+appendFileSync(${JSON.stringify(launches)}, 'x');
+createInterface({ input: process.stdin }).on('line', line => {
+  const message = JSON.parse(line);
+  if (message.method === 'authenticate') console.error(${JSON.stringify(ANTIGRAVITY_AUTH_PREFIX + url)});
+  else console.log(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: {} }));
+});
+`);
+    const runtime = await resolveAntigravityRuntime(fake.executable);
+    const profile = await prepareAntigravityProfile({ instanceId: "auth-repeat", runtime, baseDir: fake.directory });
+    const controller = new AntigravityAuthController();
+    try {
+      const first = await controller.start(runtime, profile);
+      const again = await controller.start(runtime, profile);
+      expect(again).toEqual(first);
+      expect(readFileSync(launches, "utf8")).toBe("x");
+
+      controller.cancel();
+      const fresh = await controller.start(runtime, profile);
+      expect(fresh.flowId).not.toBe(first.flowId);
+      expect(readFileSync(launches, "utf8")).toBe("xx");
+    } finally {
+      controller.cancel();
+    }
+  });
 });
 
 describe("stopping the runtime before touching its files", () => {

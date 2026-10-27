@@ -648,13 +648,26 @@ interface AuthFlow {
   client: AntigravityAcpClient;
   completed: Promise<void>;
   pending: { redirectUri: string; state: string };
+  authorizationUrl: string;
   expiresAt: number;
+}
+
+function waitingFor(flow: AuthFlow): AntigravityAuthStart {
+  return {
+    phase: "waiting",
+    flowId: flow.id,
+    authorizationUrl: flow.authorizationUrl,
+    expiresAt: new Date(flow.expiresAt).toISOString(),
+  };
 }
 
 export class AntigravityAuthController {
   private flow: AuthFlow | null = null;
 
   async start(runtime: AntigravityRuntime, profile: AntigravityProfile): Promise<AntigravityAuthStart> {
+    // The runtime that printed the link owns the 127.0.0.1 redirect listener: replacing it while the
+    // browser is still on Google's consent page sends that redirect to a closed port.
+    if (this.flow && Date.now() < this.flow.expiresAt) return waitingFor(this.flow);
     this.cancel();
     let foundUrl!: (value: ReturnType<typeof parseAntigravityAuthorizationUrl>) => void;
     let failUrl!: (error: Error) => void;
@@ -690,6 +703,7 @@ export class AntigravityAuthController {
         client,
         completed: authenticated,
         pending: { redirectUri: outcome.request.redirectUri, state: outcome.request.state },
+        authorizationUrl: outcome.request.authorizationUrl,
         expiresAt: Date.now() + AUTH_TIMEOUT_MS,
       };
       this.flow = flow;
@@ -697,12 +711,7 @@ export class AntigravityAuthController {
         if (this.flow === flow) this.flow = null;
         client.close();
       }).catch(() => {});
-      return {
-        phase: "waiting",
-        flowId: flow.id,
-        authorizationUrl: outcome.request.authorizationUrl,
-        expiresAt: new Date(flow.expiresAt).toISOString(),
-      };
+      return waitingFor(flow);
     } catch (error) {
       client.close();
       throw error;
