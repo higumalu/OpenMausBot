@@ -164,40 +164,63 @@ function hermesConfigDefault(text: string): { model: string; provider: string } 
   return null;
 }
 
-/** Whether Hermes has a hosted provider: an OpenRouter or Z.AI key in `~/.hermes/.env`, or Nous Portal
- * OAuth. Read-only: a catalog probe must never rewrite the user's config.yaml. */
-export function hermesConfiguredModel(
-  env: Record<string, string | undefined> = process.env,
-): { id: string; label: string; custom: true } | null {
-  const dir = env.HERMES_HOME || harnessHome("hermes", env);
-  let secrets = "";
+type HermesConfigOption = { id: string; label: string; custom: true };
+
+function hermesHome(env: Record<string, string | undefined>): string {
+  return env.HERMES_HOME || harnessHome("hermes", env);
+}
+
+// `hermes login` / `hermes setup` record the default in config.yaml; the OAuth token lives in Hermes' auth store.
+function readHermesConfigDefault(dir: string): { model: string; provider: string } | null {
   try {
-    secrets = readFileSync(join(dir, ".env"), "utf8");
-  } catch {}
+    return hermesConfigDefault(readFileSync(join(dir, "config.yaml"), "utf8"));
+  } catch {
+    return null;
+  }
+}
 
-  const hasHostedProviderKey = HERMES_HOSTED_PROVIDER_KEYS.some((name) => nonEmptyDotenvValue(secrets, name));
+function isLocalHermesProvider(provider: string): boolean {
+  const name = provider.toLowerCase();
+  return HERMES_LOCAL_CONFIG_PROVIDERS.has(name) || name.startsWith("custom:");
+}
 
-  // `hermes login` / `hermes setup` record the default in config.yaml; the OAuth token lives in Hermes' auth store.
-  let configuredDefault: { model: string; provider: string } | null = null;
-  try {
-    configuredDefault = hermesConfigDefault(readFileSync(join(dir, "config.yaml"), "utf8"));
-  } catch {}
-
-  const configuredProvider = configuredDefault?.provider.toLowerCase() ?? "";
-  const configIsLocal =
-    HERMES_LOCAL_CONFIG_PROVIDERS.has(configuredProvider) || configuredProvider.startsWith("custom:");
-  if (configuredDefault && configIsLocal) return null;
-
-  const configIsHosted = configuredDefault !== null;
-  if (!hasHostedProviderKey && !configIsHosted) return null;
-
-  const model = configuredDefault?.model ?? "";
+function hermesConfigOption(model: string): HermesConfigOption {
   // `custom: true` is load-bearing: a custom-only agent's picker pane lists only options carrying it.
   return {
     id: HERMES_CONFIG_MODEL_ID,
     label: model ? `${model} (Hermes config)` : "Hermes default (config)",
     custom: true as const,
   };
+}
+
+/** Whether Hermes has a hosted provider: an OpenRouter or Z.AI key in `~/.hermes/.env`, or Nous Portal
+ * OAuth. Read-only: a catalog probe must never rewrite the user's config.yaml. */
+export function hermesConfiguredModel(
+  env: Record<string, string | undefined> = process.env,
+): HermesConfigOption | null {
+  const dir = hermesHome(env);
+  let secrets = "";
+  try {
+    secrets = readFileSync(join(dir, ".env"), "utf8");
+  } catch {}
+
+  const hasHostedProviderKey = HERMES_HOSTED_PROVIDER_KEYS.some((name) => nonEmptyDotenvValue(secrets, name));
+  const configuredDefault = readHermesConfigDefault(dir);
+  if (configuredDefault && isLocalHermesProvider(configuredDefault.provider)) return null;
+
+  const configIsHosted = configuredDefault !== null;
+  if (!hasHostedProviderKey && !configIsHosted) return null;
+  return hermesConfigOption(configuredDefault?.model ?? "");
+}
+
+/** The config.yaml default when Hermes routes it through a local or custom endpoint, such as a model
+ * server elsewhere on the LAN that local inject cannot discover. Offered without an ACP probe. */
+export function hermesLocalConfigModel(
+  env: Record<string, string | undefined> = process.env,
+): HermesConfigOption | null {
+  const configuredDefault = readHermesConfigDefault(hermesHome(env));
+  if (!configuredDefault || !isLocalHermesProvider(configuredDefault.provider)) return null;
+  return hermesConfigOption(configuredDefault.model);
 }
 
 export const HERMES_ACP_MODELS_TIMEOUT_ENV = "HERMES_ACP_MODELS_TIMEOUT_MS";
@@ -318,8 +341,9 @@ async function resolveModels(
   config?: { cli?: string },
 ): Promise<ModelCatalog> {
   const catalog = await mergeLocalInject(EMPTY, env);
-  const configured = hermesConfiguredModel(env);
-  const remote = configured ? await fetchHermesAcpModels(config?.cli || "hermes", env) : [];
+  const hosted = hermesConfiguredModel(env);
+  const remote = hosted ? await fetchHermesAcpModels(config?.cli || "hermes", env) : [];
+  const configured = hosted ?? hermesLocalConfigModel(env);
   const seen = new Set<string>();
   const options = [...(configured ? [configured] : []), ...remote, ...catalog.options].filter((o) => {
     if (seen.has(o.id)) return false;

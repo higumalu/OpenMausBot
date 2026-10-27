@@ -14,6 +14,7 @@ import {
   fetchHermesAcpModels,
   hermesAcpModelId,
   hermesConfiguredModel,
+  hermesLocalConfigModel,
 } from "./hermes.ts";
 
 describe("Hermes OpenMaus screenshot compatibility binding", () => {
@@ -154,6 +155,21 @@ describe("hermesConfiguredModel", () => {
       "model:\n  default: local-model\n  provider: custom:local\n",
     );
     expect(hermesConfiguredModel(env)).toBeNull();
+  });
+
+  it.each(["custom", "custom:lan", "ollama"])("offers the config default routed through the local %s provider", (provider) => {
+    const env = home("", `model:\n  default: MiniMax-M2.7\n  provider: ${provider}\n`);
+    expect(hermesLocalConfigModel(env)).toEqual({
+      id: HERMES_CONFIG_MODEL_ID,
+      label: "MiniMax-M2.7 (Hermes config)",
+      custom: true,
+    });
+  });
+
+  it("leaves hosted and missing defaults to the ACP probe", () => {
+    expect(hermesLocalConfigModel(home("", "model: z-ai/glm-5.2\n"))).toBeNull();
+    expect(hermesLocalConfigModel(home(""))).toBeNull();
+    expect(hermesLocalConfigModel(home("", "providers:\n  ollama:\n    base_url: http://127.0.0.1:11434/v1\n"))).toBeNull();
   });
 
   it.each([
